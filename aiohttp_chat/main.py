@@ -6,6 +6,7 @@ import aiohttp_jinja2
 import random
 from redis import asyncio as aioredis
 import json
+import os
 
 
 async def handle(request):
@@ -57,8 +58,10 @@ async def websocket_handler(request):
     return ws
 
 async def init_redis():
+    host = os.environ['REDIS_HOST']
+    port = os.environ['REDIS_PORT']
     redis = await aioredis.from_url(
-        "redis://localhost:6379",
+        f"redis://{host}:{port}",
     )
     return redis
 
