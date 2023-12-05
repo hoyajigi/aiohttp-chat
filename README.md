@@ -10,3 +10,7 @@ pip install -e .
 cd aiohttp_chat
 python -X dev aiohttp_chat/main.py
 ```
+
+## Limitations
+
+
