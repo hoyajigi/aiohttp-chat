@@ -1,6 +1,8 @@
 from aiohttp import web
+import aiohttp
 import jinja2
 import aiohttp_jinja2
+import random
 
 
 async def handle(request):
@@ -16,22 +18,36 @@ async def websocket_handler(request):
 
     await ws.prepare(request)
 
-    async for msg in ws:
-        if msg.type == aiohttp.WSMsgType.TEXT:
-            if msg.data == 'close':
-                await ws.close()
-            else:
-                await ws.send_str(msg.data + '/answer')
-        elif msg.type == aiohttp.WSMsgType.ERROR:
-            print('ws connection closed with exception %s' %
-                  ws.exception())
+    name = "moomin_" + str(random.randrange(1,100))
+    print('%s joined.'%name)
 
-    print('websocket connection closed')
+    await ws.send_json({'action': 'connect', 'name': name})
+
+    for wss in request.app['websockets'].values():
+        await wss.send_json({'action': 'join', 'name': name})
+    request.app['websockets'][name] = ws
+
+    while True:
+        msg = await ws.receive()
+
+        if msg.type == aiohttp.WSMsgType.text:
+            for wss in request.app['websockets'].values():
+                if wss is not ws:
+                    await wss.send_json(
+                        {'action': 'sent', 'name': name, 'text': msg.data})
+        else:
+            break
+
+    del request.app['websockets'][name]
+    print('%s disconnected.'%name)
+    for wss in request.app['websockets'].values():
+        await wss.send_json({'action': 'disconnect', 'name': name})
 
     return ws
 
 if __name__ == '__main__':
     app = web.Application()
+    app['websockets'] = {}
     aiohttp_jinja2.setup(app,
         loader=jinja2.FileSystemLoader(str('aiohttp_chat/templates')))
     app.router.add_get('/', websocket_handler)
