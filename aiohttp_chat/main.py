@@ -1,8 +1,11 @@
 from aiohttp import web
 import aiohttp
+import asyncio
 import jinja2
 import aiohttp_jinja2
 import random
+from redis import asyncio as aioredis
+import json
 
 
 async def handle(request):
@@ -27,8 +30,16 @@ async def websocket_handler(request):
         await wss.send_json({'action': 'join', 'name': name})
     request.app['websockets'][name] = ws
 
+    redis = request.app['redis']
+    key = "aiohttp:chat"
+    histories = await redis.lrange(key, 0, -1)
+    for history in histories:
+        await ws.send_json(json.loads(history))
+
+
     while True:
         msg = await ws.receive()
+        await redis.lpush(key, json.dumps({'action': 'sent', 'name': name, 'text': msg.data}))
 
         if msg.type == aiohttp.WSMsgType.text:
             for wss in request.app['websockets'].values():
@@ -45,9 +56,18 @@ async def websocket_handler(request):
 
     return ws
 
+async def init_redis():
+    redis = await aioredis.from_url(
+        "redis://localhost:6379",
+    )
+    return redis
+
 if __name__ == '__main__':
     app = web.Application()
     app['websockets'] = {}
+    loop = asyncio.get_event_loop()
+    redis = loop.run_until_complete(init_redis())
+    app["redis"] = redis
     aiohttp_jinja2.setup(app,
         loader=jinja2.FileSystemLoader(str('aiohttp_chat/templates')))
     app.router.add_get('/', websocket_handler)
