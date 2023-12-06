@@ -3,6 +3,12 @@
 a simple multi-user single-room realtime webchat app using aiohttp and redis-py
 
 ## How to run
+Simple and best
+```
+docker-compose up
+```
+
+
 web app for dev
 ```
 pyenv virtualenv 3.11.6 venv
