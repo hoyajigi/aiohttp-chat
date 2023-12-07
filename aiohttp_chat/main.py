@@ -21,8 +21,8 @@ from typing import (
     cast,
 )
 
-websockets_key = aiohttp.web.AppKey("websockets_key", Any)
-redis_key = aiohttp.web.AppKey("redis_key", Any)
+websockets_key = aiohttp.web.AppKey("websockets_key", List[web.WebSocketResponse])
+redis_key = aiohttp.web.AppKey("redis_key", aioredis.Connection)
 
 async def handle(request):
     name = request.match_info.get('name', "Anonymous")
@@ -30,6 +30,7 @@ async def handle(request):
     return web.Response(text=text)
 
 async def websocket_handler(request):
+    last_redis_stream_id = 0
     ws = web.WebSocketResponse()
     ws_ready = ws.can_prepare(request)
     if not ws_ready.ok:
@@ -38,7 +39,6 @@ async def websocket_handler(request):
     await ws.prepare(request)
 
     name = "moomin_" + str(random.randrange(1,100))
-    print('%s joined.'%name)
 
     await ws.send_json({'action': 'connect', 'name': name})
 
@@ -47,26 +47,32 @@ async def websocket_handler(request):
     request.app[websockets_key][name] = ws
 
     redis = request.app[redis_key]
-    key = "aiohttp:chat"
-    histories = await redis.lrange(key, 0, -1)
-    for history in histories:
-        await ws.send_json(json.loads(history))
-
+    redis_stream_key = "aiohttp:chatstream"
 
     while True:
-        msg = await ws.receive()
-        await redis.lpush(key, json.dumps({'action': 'sent', 'name': name, 'text': msg.data}))
+        try:
+            async with asyncio.timeout(0.01):
+                msg = await ws.receive()
 
-        if msg.type == aiohttp.WSMsgType.text:
-            for wss in request.app[websockets_key].values():
-                if wss is not ws:
-                    await wss.send_json(
-                        {'action': 'sent', 'name': name, 'text': msg.data})
-        else:
-            break
-
+                if msg.type == aiohttp.WSMsgType.text:
+                    created_id = await redis.xadd(redis_stream_key, {'action': 'sent', 'name': name, 'text': msg.data})
+                else:
+                    break
+        except TimeoutError:
+            pass
+        
+        rmsgstreams = await redis.xread(streams={redis_stream_key: last_redis_stream_id}, count=1, block = 10)
+        for rmsgstream in rmsgstreams:
+            key, rmsgs = rmsgstream
+            for rmsg in rmsgs:
+                last_redis_stream_id, msg_payload = rmsg
+                msg_payload_name = msg_payload[b'name'].decode('utf-8')
+                msg_payload_text = msg_payload[b'text'].decode('utf-8')
+                if name != msg_payload_name:
+                    await ws.send_json(
+                        {'action': 'sent', 'name': msg_payload_name, 'text': msg_payload_text})
+                    
     del request.app[websockets_key][name]
-    print('%s disconnected.'%name)
     for wss in request.app[websockets_key].values():
         await wss.send_json({'action': 'disconnect', 'name': name})
 
