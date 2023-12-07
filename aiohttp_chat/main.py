@@ -7,7 +7,22 @@ import random
 from redis import asyncio as aioredis
 import json
 import os
+import aiotools
+from contextlib import asynccontextmanager as actxmgr
+from typing import (
+    Any,
+    AsyncIterator,
+    Final,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Sequence,
+    cast,
+)
 
+websockets_key = aiohttp.web.AppKey("websockets_key", Any)
+redis_key = aiohttp.web.AppKey("redis_key", Any)
 
 async def handle(request):
     name = request.match_info.get('name', "Anonymous")
@@ -27,11 +42,11 @@ async def websocket_handler(request):
 
     await ws.send_json({'action': 'connect', 'name': name})
 
-    for wss in request.app['websockets'].values():
+    for wss in request.app[websockets_key].values():
         await wss.send_json({'action': 'join', 'name': name})
-    request.app['websockets'][name] = ws
+    request.app[websockets_key][name] = ws
 
-    redis = request.app['redis']
+    redis = request.app[redis_key]
     key = "aiohttp:chat"
     histories = await redis.lrange(key, 0, -1)
     for history in histories:
@@ -43,16 +58,16 @@ async def websocket_handler(request):
         await redis.lpush(key, json.dumps({'action': 'sent', 'name': name, 'text': msg.data}))
 
         if msg.type == aiohttp.WSMsgType.text:
-            for wss in request.app['websockets'].values():
+            for wss in request.app[websockets_key].values():
                 if wss is not ws:
                     await wss.send_json(
                         {'action': 'sent', 'name': name, 'text': msg.data})
         else:
             break
 
-    del request.app['websockets'][name]
+    del request.app[websockets_key][name]
     print('%s disconnected.'%name)
-    for wss in request.app['websockets'].values():
+    for wss in request.app[websockets_key].values():
         await wss.send_json({'action': 'disconnect', 'name': name})
 
     return ws
@@ -65,16 +80,42 @@ async def init_redis():
     )
     return redis
 
-if __name__ == '__main__':
+@actxmgr
+async def server_main(
+    loop: asyncio.AbstractEventLoop,
+    pidx: int,
+    _args: List[Any],
+) -> AsyncIterator[None]:
     app = web.Application()
-    app['websockets'] = {}
-    loop = asyncio.get_event_loop()
-    redis = loop.run_until_complete(init_redis())
-    app["redis"] = redis
+    app[websockets_key] = {}
+    app[redis_key] = await init_redis()
     aiohttp_jinja2.setup(app,
         loader=jinja2.FileSystemLoader(str('aiohttp_chat/templates')))
     app.router.add_get('/', websocket_handler)
     app.router.add_static('/static/',
                         path='aiohttp_chat/static',
                         name='static')
-    web.run_app(app)
+    
+    runner = web.AppRunner(app, keepalive_timeout=30.0)
+    await runner.setup()
+    site = web.TCPSite(
+        runner,
+        backlog=1024,
+        reuse_port=True,
+    )
+    await site.start()
+
+    try:
+        yield
+    finally:
+        print("shutting down...")
+
+if __name__ == '__main__':
+    try:
+        aiotools.start_server(
+            server_main,
+            num_workers=2,
+            wait_timeout=5.0,
+        )
+    finally:
+        print("terminated.")
