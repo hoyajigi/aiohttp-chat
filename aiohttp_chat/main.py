@@ -20,6 +20,7 @@ from typing import (
     Sequence,
     cast,
 )
+from aiohttp import WSCloseCode
 
 websockets_key = aiohttp.web.AppKey("websockets_key", List[web.WebSocketResponse])
 redis_key = aiohttp.web.AppKey("redis_key", aioredis.Connection)
@@ -78,13 +79,7 @@ async def websocket_handler(request):
 
     return ws
 
-async def init_redis():
-    host = os.environ['REDIS_HOST']
-    port = os.environ['REDIS_PORT']
-    redis = await aioredis.from_url(
-        f"redis://{host}:{port}",
-    )
-    return redis
+
 
 @actxmgr
 async def server_main(
@@ -94,7 +89,24 @@ async def server_main(
 ) -> AsyncIterator[None]:
     app = web.Application()
     app[websockets_key] = {}
-    app[redis_key] = await init_redis()
+
+    async def init_redis(app):
+        host = os.environ['REDIS_HOST']
+        port = os.environ['REDIS_PORT']
+        redis = await aioredis.from_url(
+            f"redis://{host}:{port}",
+        )
+        app[redis_key] = redis
+
+    app.on_startup.append(init_redis)
+    # app.on_cleanup.append(dispose_redis)
+    
+    async def on_shutdown(app):
+        for ws in set(app[websockets_key]):
+            await ws.close(code=WSCloseCode.GOING_AWAY, message="Server shutdown")
+    
+    app.on_shutdown.append(on_shutdown)
+
     aiohttp_jinja2.setup(app,
         loader=jinja2.FileSystemLoader(str('aiohttp_chat/templates')))
     app.router.add_get('/', websocket_handler)
