@@ -20,6 +20,7 @@ from typing import (
     Sequence,
     cast,
 )
+from aiohttp import WSCloseCode
 
 websockets_key = aiohttp.web.AppKey("websockets_key", List[web.WebSocketResponse])
 redis_key = aiohttp.web.AppKey("redis_key", aioredis.Connection)
@@ -99,6 +100,12 @@ async def server_main(
 
     app.on_startup.append(init_redis)
     # app.on_cleanup.append(dispose_redis)
+    
+    async def on_shutdown(app):
+        for ws in set(app[websockets_key]):
+            await ws.close(code=WSCloseCode.GOING_AWAY, message="Server shutdown")
+    
+    app.on_shutdown.append(on_shutdown)
 
     aiohttp_jinja2.setup(app,
         loader=jinja2.FileSystemLoader(str('aiohttp_chat/templates')))
